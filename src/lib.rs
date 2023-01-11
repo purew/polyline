@@ -22,8 +22,8 @@
 //! in `(x, y)` order. The Polyline algorithm and first-party documentation assumes the _opposite_ coordinate order.
 //! It is thus advisable to pay careful attention to the order of the coordinates you use for encoding and decoding.
 
-use std::{char, cmp};
 use geo_types::{Coordinate, LineString};
+use std::{char, cmp};
 
 const MIN_LONGITUDE: f64 = -180.0;
 const MAX_LONGITUDE: f64 = 180.0;
@@ -78,7 +78,7 @@ fn encode(current: f64, previous: f64, factor: i32) -> Result<String, String> {
 /// ```
 pub fn encode_coordinates<C>(coordinates: C, precision: u32) -> Result<String, String>
 where
-    C: IntoIterator<Item=Coordinate<f64>>,
+    C: IntoIterator<Item = Coordinate<f64>>,
 {
     let base: i32 = 10;
     let factor: i32 = base.pow(precision);
@@ -109,60 +109,21 @@ where
 /// ```
 pub fn decode_polyline(polyline: &str, precision: u32) -> Result<LineString<f64>, String> {
     let mut index = 0;
-    let mut at_index;
     let mut lat: i64 = 0;
     let mut lng: i64 = 0;
     let mut coordinates = vec![];
     let base: i32 = 10;
     let factor = i64::from(base.pow(precision));
 
-    while index < polyline.len() {
-        let mut shift = 0;
-        let mut result = 0;
-        let mut byte;
+    let chars = polyline.as_bytes();
 
-        loop {
-            at_index = polyline
-                .chars()
-                .nth(index)
-                .ok_or("Couldn't decode Polyline")?;
-            byte = at_index as u64 - 63;
-            index += 1;
-            result |= (byte & 0x1f) << shift;
-            shift += 5;
-            if byte < 0x20 {
-                break;
-            }
+    while index < chars.len() {
+        let (latitude_change, new_index) = trans(&chars, index);
+        if index >= chars.len() {
+            break;
         }
-
-        let latitude_change: i64 = if (result & 1) > 0 {
-            !(result >> 1)
-        } else {
-            result >> 1
-        } as i64;
-
-        shift = 0;
-        result = 0;
-
-        loop {
-            at_index = polyline
-                .chars()
-                .nth(index)
-                .ok_or("Couldn't decode Polyline")?;
-            byte = at_index as u64 - 63;
-            index += 1;
-            result |= (byte & 0x1f) << shift;
-            shift += 5;
-            if byte < 0x20 {
-                break;
-            }
-        }
-
-        let longitude_change: i64 = if (result & 1) > 0 {
-            !(result >> 1)
-        } else {
-            result >> 1
-        } as i64;
+        let (longitude_change, new_index) = trans(&chars, new_index);
+        index = new_index;
 
         lat += latitude_change;
         lng += longitude_change;
@@ -171,6 +132,30 @@ pub fn decode_polyline(polyline: &str, precision: u32) -> Result<LineString<f64>
     }
 
     Ok(coordinates.into())
+}
+
+fn trans(chars: &[u8], mut index: usize) -> (i64, usize) {
+    let mut at_index;
+    let mut shift = 0;
+    let mut result = 0;
+    let mut byte;
+    loop {
+        at_index = chars[index];
+        byte = (at_index as u64).saturating_sub(63);
+        index += 1;
+        result |= (byte & 0x1f) << shift;
+        shift += 5;
+        if byte < 0x20 {
+            break;
+        }
+    }
+
+    let coordinate_change = if (result & 1) > 0 {
+        !(result >> 1)
+    } else {
+        result >> 1
+    } as i64;
+    (coordinate_change, index)
 }
 
 #[cfg(test)]
@@ -213,11 +198,8 @@ mod tests {
     // coordinates close to each other (below precision) should work
     fn rounding_error() {
         let poly = "cr_iI}co{@?dB";
-        let res : LineString<f64> = vec![[9.9131118, 54.0702648], [9.9126013, 54.0702578]].into();
-        assert_eq!(
-            encode_coordinates(res, 5).unwrap(),
-            poly
-        );
+        let res: LineString<f64> = vec![[9.9131118, 54.0702648], [9.9126013, 54.0702578]].into();
+        assert_eq!(encode_coordinates(res, 5).unwrap(), poly);
         assert_eq!(
             decode_polyline(&poly, 5).unwrap(),
             vec![[9.91311, 54.07026], [9.91260, 54.07026]].into()
@@ -238,7 +220,17 @@ mod tests {
     // Can't have a latitude > 90.0
     fn bad_coords() {
         let s = "_p~iF~ps|U_ulLnnqC_mqNvxq`@";
-        let res : LineString<f64> = vec![[-120.2, 38.5], [-120.95, 40.7], [-126.453, 430.252]].into();
+        let res: LineString<f64> =
+            vec![[-120.2, 38.5], [-120.95, 40.7], [-126.453, 430.252]].into();
         assert_eq!(encode_coordinates(res, 5).unwrap(), s);
+    }
+
+    #[test]
+    fn should_not_trigger_overflow() {
+        decode_polyline(
+            include_str!("../route-geometry-sweden-west-coast.polyline6"),
+            6,
+        )
+        .unwrap();
     }
 }
